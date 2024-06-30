@@ -1,0 +1,656 @@
+---
+title: "Datenanalyse Flugverbindungen"
+author: "Kai Nietfeld, Máté Jordán, Arne Morawitz, Moritz Theis"
+date: "20 11 2021"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Eigene Datenanalyse
+## Datensatz: Flight Route Database
+
+## Allgemeine Informationen zum Datensatz
+Wir haben uns mit dem Datensatz "Flight Route Database" beschäftigt. Im Orginal besteht der Datensatz aus 9 Spalten und 67240 Zeilen. Der Datensatz beinhaltet 59036 Verbindungen zwischen 3209 verschiedenen Flughäfen und 531 verschiedenen Fluglinien. Die Verbindungen enthalten sowohl nationale, als auch internationale Verbindungen. Die Daten und Angaben des Datensatzes sind auf dem Stand Januar 2012. Unsere Quelle für den Datensatz ist kaggle.com. Ursprünglich stammt der Datensaz jedoch von openflights.org. Die 9 Spalten des Datensatzes geben uns Informationen, welche Airline geflogen ist, von welchem Flughafen das Flugzeug gestartet ist und wo es gelandet ist. Außerdem kann man den Spalten entnehmen, ob es ein Direktflug war oder ob er durch eine andere Fluglinie durchgeführt wurde (Codesharing). Des Weiteren erfasst der Datensatz den Flugzeugtyp.
+
+## Datensatz vorbereiten
+Bevor wir den Datensatz genauer analysieren und visualisieren können, müssen wir den Datensatz noch entsprechend vorbereiten. Alle Informationen sind in Abkürzungen oder durch IDs, welche von OpenFlights vergeben wurden, angegeben. Der Code der Abkürzungen für die Fluglinien und Flughäfen ist nicht einheitlich, sondern wird teilweise auf International Air Transport Association(IATA) und teilweise auf der Internationalen Zivilluftfahrtorganisation(ICAO) basierend angegeben. Da diese Angaben nicht einheitlich und vollständig sind, nutzen wir zur Identifikation der Fluglinien und Flughäfen die einheitliche und vollständige ID. Außerdem haben wir mithilfe des Airlines-Datensatzes und des Airports-Datensatzes von OpenFligths genauere Angaben zu den Verbindungen ergänzt (zum Beispiel: Längen- und Breitengrad, Flughafenname, Land usw.).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+#Library
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(rgeos)
+library(colorspace)
+library(sf)
+library(ggplot2)
+library(maptools)
+library(osmdata)
+library(dplyr)
+library(stringr)
+
+routes <- read.csv2("routes.csv", encoding = "latin1")
+airports <- read.csv2("Airports.csv", encoding = "UTF-8")
+airlines <- read.csv2("Airlines.csv", encoding = "UTF-8")
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+#route Datensatz vorbereiten
+routes <- routes %>%
+  select(-airline) %>%
+  select(-source.airport) %>%
+  select(-destination.apirport) %>%
+  select(-codeshare) %>%
+  select(-stops) %>%
+  select(-equipment)
+
+#airlines vorbereiten
+
+airlines <- airlines %>%
+  rename(airline.ID = airline.id) %>%
+  mutate(airline.country=recode(airline.country,
+                                "Congo (Kinshasa)"="Democratic Republic of the Congo")) %>%
+  mutate(airline.country=recode(airline.country,
+                                "Congo (Brazzaville)"="Republic of Congo")) %>%
+  mutate(airline.country=recode(airline.country,
+                                "Serbia"="Republic of Serbia")) %>%
+  mutate(airline.country=recode(airline.country,
+                                "Hong Kong"="Hong Kong S.A.R.")) %>%
+  mutate(airline.country=recode(airline.country,
+                                "Cote d'Ivoire"="Ivory Coast")) %>%
+  mutate(airline.country=recode(airline.country,
+                                "Taiyuan"="Taiwan")) %>%
+  mutate(airline.country=recode(airline.country, 
+                                "United States"="United States of America")) %>%
+  mutate(airline.ID=as.character(airline.ID))
+
+
+#airports Datensatz vorbereiten und in Ankunft und Abflug unterteilen
+
+airports <- airports %>%
+  select(-Source) %>%
+  select(-IATA) %>%
+  select(-ICAO) %>%
+  select(-DST) %>%
+  select(-Type) %>%
+  select(-Timezone) %>%
+  select(-zone) %>%
+  select(-Tz.database.time) %>%
+  rename(airport.ID = Airport.ID)
+
+airports <- airports %>%
+  mutate(Country=recode(Country,
+                        "Congo (Kinshasa)"="Democratic Republic of the Congo")) %>%
+  mutate(Country=recode(Country,
+                        "Congo (Brazzaville)"="Republic of Congo")) %>%
+  mutate(Country=recode(Country,
+                        "Serbia"="Republic of Serbia")) %>%
+  mutate(Country=recode(Country,
+                        "Hong Kong"="Hong Kong S.A.R.")) %>%
+  mutate(Country=recode(Country,
+                        "Cote d'Ivoire"="Ivory Coast")) %>%
+  mutate(Country=recode(Country,
+                        "Taiyuan"="Taiwan")) %>%
+  mutate(Country=recode(Country, 
+                        "United States"="United States of America"))  
+ 
+source_airports <- airports %>%
+  rename(source.airport.id=airport.ID) %>%
+  rename(source.City=City) %>%
+  rename(source.Country=Country) %>%
+  rename(source.Lattitude=Lattitude) %>%
+  rename(source.Longitude=Longitude) %>%
+  rename(source.Name=Name)
+
+destination_airports <- airports %>%
+  rename(destination.airport.id=airport.ID) %>%
+  rename(destination.City=City) %>%
+  rename(destination.Country=Country) %>%
+  rename(destination.Lattitude=Lattitude) %>%
+  rename(destination.Longitude=Longitude) %>%
+  rename(destination.Name=Name)
+
+
+
+#Daten zusammenführen
+Daten <- left_join(routes, source_airports, by=c("source.airport.id"))
+Daten <- left_join(Daten, destination_airports, by=c("destination.airport.id"))
+Daten<-Daten[complete.cases(Daten["source.Name"]),]
+Daten<-Daten[complete.cases(Daten["destination.Name"]),]
+Daten <- left_join(Daten, airlines, by=c(("airline.ID")))
+
+Daten$richtung_süden <- Daten$source.Lattitude > Daten$destination.Lattitude
+
+
+Daten$inlandsflug <- Daten$source.Country == Daten$destination.Country
+
+#Hilfsdatensätze erstellen
+
+#Hilfscode für die Betrachtung Deutschlands
+Routen_aus_Deu <- Daten[Daten$source.Country == "Germany",]
+
+count_deutsche_Zielflughäfen <- Routen_aus_Deu %>%
+  group_by(destination.Name, richtung_süden) %>%
+  summarize(Zielflughäfen=n())
+
+count_deutsche_Zielländer <- Routen_aus_Deu %>%
+  group_by(destination.Name) %>%
+  summarize(Zielverbingen=n())
+
+
+
+Routen_aus_Deu <- left_join(Routen_aus_Deu, 
+                            count_deutsche_Zielflughäfen, 
+                            by=c("destination.Name"))
+Routen_aus_Deu <- left_join(Routen_aus_Deu, 
+                            count_deutsche_Zielländer, 
+                            by=c("destination.Name"))
+
+#USA
+Routen_aus_usa <- Daten[Daten$source.Country == "United States of America",]
+
+count_USA_Abflüge <- Routen_aus_usa %>%
+  group_by(source.Name) %>%
+  summarize(Abflüge=n())
+
+count_USA_Zielländer <- Routen_aus_usa %>%
+  group_by(destination.Country) %>%
+  summarize(Zielländer=n())
+
+Routen_aus_usa <- left_join(Routen_aus_usa, 
+                            count_USA_Abflüge, 
+                            by=c("source.Name"))
+Routen_aus_usa <- left_join(Routen_aus_usa, 
+                            count_USA_Zielländer, 
+                            by=c("destination.Country"))
+
+#Airlines
+airlines_Count <- Daten %>%
+  group_by(airline.name) %>%
+  summarize(Anzahl_Routen=n())
+
+
+#Airports
+airports_count <- Daten %>%
+  group_by(source.Country, source.Name)%>%
+  rename(geounit = source.Country) %>%
+  summarise(n=n())
+
+airports_count1 <- airports_count %>%
+  group_by(geounit)%>%
+  summarise(Flughäfen=n())
+
+Airport_routen <- Daten %>%
+  group_by(source.Name) %>%
+  summarize(ausgehende_routen=n())
+
+
+
+Daten <- left_join(Daten, airlines_Count, by=c("airline.name"))
+Daten <- left_join(Daten, Airport_routen, by=c("source.Name"))
+
+world <- left_join(world, airports_count1, by=c("geounit"))
+
+daten <- Daten
+
+```
+
+# Allgemeine Informationen
+
+## Anzahl an Airports pro Land
+
+Dieser Plot stellt eine Weltkarte da, bei der die Länder nach der Anzahl der Flughäfen gefärbt sind. Je dunkler die Farbe des Landes ist, desto mehr Flughäfen gibt es dort. Die beschrifteten Flughäfen sind die frequentiertesten Flughäfen des jeweiligen Kontinents. Atlanta ist der Flughafen mit den meisten Verbindungen der Welt. Es ist klar zu sehen, dass die USA die meisten Flughäfen von allen Ländern hat. Die grauen Gebiete sind die Länder, die keine Angaben in unserer Statistik haben, wie z.B. Nordkorea oder die Antarktis.
+
+
+```{r}
+ggplot(data = world, fill = "white") +
+  geom_sf(mapping = aes(fill = Flughäfen)) +
+  scale_fill_continuous_sequential(palette="Red-Yellow",
+                                   trans = "sqrt") +
+  labs(title="Anzahl an Flughäfen", 
+       subtitle = "pro Land",  
+       fill="", 
+       caption = "openflights.org" ) +
+  theme_void()+
+  
+  geom_text(data = Daten[Daten$source.Name == "Hartsfield Jackson Atlanta International Airport",],
+            mapping = aes(y=source.Lattitude, 
+                          x=source.Longitude, 
+                          label = "Atlanta"), 
+                          color= "Orange" 
+  )+
+  geom_text(data = Daten[Daten$source.Name == "Beijing Capital International Airport",],
+            mapping = aes(y=source.Lattitude, 
+                          x=source.Longitude, 
+                          label = "Beijing"), 
+            color= "Blue" 
+  )+
+  geom_text(data = Daten[Daten$source.Name == "London Heathrow Airport",],
+            mapping = aes(y=source.Lattitude, 
+                          x=source.Longitude, 
+                          label = "London"), 
+            color= "Blue"
+  )+
+  geom_text(data = Daten[Daten$source.Name == "Sydney Kingsford Smith International Airport",],
+            mapping = aes(y=source.Lattitude, 
+                          x=source.Longitude, 
+                          label = "Sydney"), 
+            color= "Blue"
+  )+
+  geom_text(data = Daten[Daten$source.Name == "Guarulhos - Governador André Franco Montoro International Airport",],
+            mapping = aes(y=source.Lattitude, 
+                          x=source.Longitude, 
+                          label = "Sao Paulo"), 
+            color= "Blue"
+  )+
+  geom_text(data = Daten[Daten$source.Name == "OR Tambo International Airport",],
+            mapping = aes(y=source.Lattitude, 
+                          x=source.Longitude, 
+                          label = "Johannesburg"), 
+            color= "Blue"
+  )
+
+```
+
+## Größte Fluggesellschaften, basierend auf Verbindungen:
+
+Das Balkendiagramm zeigt die größten Fluglinien der Welt, gemessen an der Anzahl der 
+Verbindungen. Die X-Achse und Y-Achse sind umgedreht, so sieht man an der Y-Achse die einzelnen 
+Airlines, und die X-Achse zeigt die Anzahl der Verbindungen. Da der Datensatz von 2012 ist, sind US 
+Airways, AirTran Airways, Alitalia und Air Berlin noch enthalten. Anhand der geteilten Balken kann man 
+erkennen, ob die Airline mehr Inlandsverbindungen oder mehr Auslandsverbindungen anbietet. Man 
+kann sehen, dass die irische Airline Ryanair die meisten Verbindungen, fast 2500, weltweit hat. Die 
+zweitmeisten Verbindungen hat American Airlines, darauf folgen drei weitere amerikanische Airlines 
+mit einem sehr geringen Abstand zueinander. Die nächstgrößten Airlines, drei chinesische Airlines, 
+haben einen großen Abstand zu den ersten fünf Airlines. Lufthansa hat die meisten Verbindungen 
+unter allen deutschen Airlines. Dass neben Ryanair weitere Low-Cost Carrier (Billigfluggesellschaften)
+so weit oben aufgelistet sind, liegt an der hohen Anzahl an Kurzstrecken. Dank der großen Flotte von Schmalrumpfflugzeugen kann Ryanair viele Ziele bedienen. Hätte man die 
+Größe der Airlines anhand der beförderten Passagiere gemessen, wären Airlines mit 
+Großraumflugzeugen größer als Ryanair. Interessant ist auch der Blick auf die Anzahl der 
+Inlandsverbindungen im Vergleich zu den Auslandsflügen. So konzentrieren sich die meisten Airlines 
+auf Auslandsverbindungen, amerikanische Airlines hingegen fliegen am meisten im Inland. Diese 
+Grafik gibt uns einen ersten Überblick über die Luftfahrt im Jahre 2012 und zeigt das in Europa 
+lediglich Low-Cost Carrier international mithalten können.
+
+```{r}
+ggplot(data = Daten[Daten$Anzahl_Routen>650,], 
+       mapping = aes(x=reorder(airline.name, airline.name, length)))+
+  geom_bar(aes(fill = inlandsflug),color = "Black")+
+  scale_fill_brewer(labels = c("International", "National"), palette = "Set1")+
+  theme_classic()+
+  coord_flip()+
+  labs(title = "Größte Fluggesellschaften", 
+       subtitle = "basierend auf Verbindungen",
+       x="", 
+       caption = "openflights.org", 
+       fill = "Flugverbindung", y = "Anzahl der Verbindungen")
+```
+
+## Größte Flughäfen, basierend auf Verbindungen:
+
+Im folgenden Balkendiagramm sieht man die größten Flughäfen der Welt, basierend auf den 
+Verbindungen. An der Y-Achse sieht man die Flughäfen aufgelistet und an der X-Achse kann man die 
+Anzahl der Verbindungen ablesen. Die Farbe der Balken zeigt den Standort des jeweiligen Flughafens.
+Der größte Flughafen mit über 875 verschiedenen Verbindungen ist der Hartsfield Jackson Atlanta International 
+Airport, aus Atlanta. Darauf folgt der Chicago O’Hare International Airport mit großem Abstand. An 
+Stelle sechs steht der Frankfurt am Main Airport, die Differenzen in den Verbindungen sind hier nur sehr 
+gering. Von den zehn größten Flughäfen weltweit sind zwar fünf aus Amerika, aber neben dem 
+Flughafen aus Beijing, auch vier aus Europa. Wenn man die Größe der Flughäfen mit denen der 
+Airlines aus der vorherigen Visualisierung vergleicht, fallen die europäischen Flughäfen auf.Der Frankfurter Flughafen dient im Herzen Europas als Drehkreuz zwischen Asien und 
+Amerika und wird so von einer Vielzahl von Airlines angeflogen.
+Der Flughafen in Atlanta wird vor allem als Zwischenstopp für nachfolgende Inlandsflüge genutzt und ist auch gemessen an anderen 
+Parametern der größte Flughafen der Welt. Man sieht an diesem Diagramm besonders deutlich, wie 
+wichtig Drehkreuze in der internationalen Luftfahrt sind. So haben besonders Flughäfen in Europa 
+viele Verbindungen, da sie strategisch gut gelegen sind und als Zwischenstopp dienen. Anhand der 
+zwei Grafiken kann man also sagen, dass es verschiedene Typen von Flughäfen gibt. Flughäfen die vor
+allem als Umsteigemöglichkeit dienen und solche, die aus touristischen Gründen angeflogen werden 
+oder weil sie in einwohnerstarken Gebieten liegen. 
+
+
+
+```{r}
+Daten$source.Name <- str_replace_all(Daten$source.Name, "Airport", "A.")
+Daten$source.Name <- str_replace_all(Daten$source.Name, "International", "I.")
+ggplot(data = Daten[Daten$ausgehende_routen>350,], 
+       mapping = aes(x=reorder(source.Name, 
+                               source.Name, 
+                               length), 
+                     fill = source.Country))+
+  geom_bar(color = "Black")+
+  coord_flip()+
+  theme_classic()+
+  theme(axis.text.y = element_text(size = 5))+
+  labs(title = "Größte Flughäfen", 
+       subtitle = "basierend auf Verbindungen",
+       x="", 
+       caption = "I.A. = International Airport",
+       y = "Anzahl der ausgehenden Verbindungen", fill = "Land")
+```
+
+
+
+
+# Deutschland
+
+## Verbindungen innerhalb Deutschlands
+
+In der folgenden Visualisierung sieht man die häufigsten Verbindungen innerhalb Deutschlands. Die Größe der roten Punkte symbolisiert wie viele Abflüge ein Flughafen insgesamt hat, die Linien kennzeichnen die ausgehenden Flugverbindungen innerhalb Deutschlands. Je breiter die Linien sind, desto mehr verschiedene Flugverbindungen gibt es zwischen den Flughäfen.
+Sofort sieht man, dass manche Flughäfen mehr Verbindungen als andere haben, nämlich Berlin, Hamburg, Düsseldorf, Frankfurt, München und Stuttgart. Diese Städte sind aus verschiedensten Gründen wichtige Standorte in Deutschland. Bei genauerem Betrachten sieht man, dass es Flughäfen gibt, die keine Verbindungen haben. Das heißt, dass diese Flughäfen nur für Auslandsflüge benutzt werden. Ein Beispiel für so ein Flughafen ist "Frankfurt Hahn".
+
+```{r}
+germany <- ne_countries(country = "germany", 
+                        scale = "medium", 
+                        returnclass = "sf")
+
+countsabflüge_airport <- daten[daten$source.Country == "Germany",] %>%
+  group_by(source.Name, 
+           source.Lattitude, 
+           source.Longitude) %>%
+  summarize(Abflüge = n())
+
+Germany <- daten[daten$source.Country == "Germany",] 
+
+Germany_1 <- Germany[Germany$destination.Country == "Germany",] 
+
+inlandverbindungen <- Germany_1 %>%
+  group_by(source.Name, 
+           source.Lattitude, 
+           source.Longitude, 
+           destination.Longitude, 
+           destination.Lattitude)  %>%
+  summarize(Verbindungen = n())
+
+Germany_1 <- left_join(Germany_1, 
+                       inlandverbindungen, 
+                       by = c("source.Name",
+                              "destination.Longitude",
+                              "destination.Lattitude"))
+
+
+ggplot(data=germany) +
+  geom_sf(fill = "black", colour = "white")+
+  coord_sf(xlim = c(5,15), ylim = c(47,55))+
+  theme_void()+ #lon und lat ausblenden
+  
+  #Routenlinien einfügen
+  geom_path(data=Germany_1, 
+            mapping = aes(x = source.Longitude.x , 
+                          y = source.Lattitude.x, 
+                          size = Verbindungen),
+            alpha = 0.3,
+            colour = "red",
+  )+
+  geom_point(data=countsabflüge_airport, 
+             mapping = aes(y=source.Lattitude, 
+                           x=source.Longitude, 
+                           size = Abflüge),
+             colour = "brown"
+  )+
+  labs(title = "Routen in Deutschland",
+       subtitle = "Flughäfen mit den meisten Inland-Verbindungen",
+       caption = "Linienstärke = Anzahl an Airlines für diese Route",
+       size = "Anzahl an 
+ausgehenden 
+Verbindungen"
+  )+
+  
+  #relevanteste Flughafen in Deutschland
+  #Frankfurt hat mehrere Flughafen (Hahn, FaM Airport)
+  geom_text(data = Germany_1[Germany_1$source.Name == "Frankfurt am Main Airport",],
+            mapping = aes(y=source.Lattitude.x, 
+                          x=source.Longitude.x, 
+                          label = source.City),
+            nudge_y = -0.2,
+            colour = "grey"
+  )+
+  geom_text(data = Germany_1[Germany_1$source.City == "Munich",],
+            mapping = aes(y=source.Lattitude.x, 
+                          x=source.Longitude.x, 
+                          label = "München"), 
+            nudge_y = -0.2,
+            colour = "grey"
+  )+
+  #In Berlin sind mehrere Flughäfen, deswegen source.Name
+  geom_text(data = Germany_1[Germany_1$source.Name == "Berlin-Tegel Airport",],
+            mapping = aes(y=source.Lattitude.x, 
+                          x=source.Longitude.x, 
+                          label = source.City), 
+            nudge_y = 0.3,
+            colour = "grey"
+  )+
+  geom_text(data = Germany_1[Germany_1$source.City == "Duesseldorf",],
+            mapping = aes(y=source.Lattitude.x, 
+                          x=source.Longitude.x, 
+                          label = "Düsseldorf"), 
+            nudge_y = 0.2,
+            colour = "grey"
+  )+
+  #In Hamburg sind auch mehrere Flughäfen
+  geom_text(data = Germany_1[Germany_1$source.Name == "Hamburg Airport",],
+            mapping = aes(y=source.Lattitude.x, 
+                          x=source.Longitude.x, 
+                          label = source.City), 
+            nudge_y = -0.2,
+            colour = "grey"
+  )+
+  geom_text(data = Germany_1[Germany_1$source.Name == "Stuttgart Airport",],
+            mapping = aes(y=source.Lattitude.x, 
+                          x=source.Longitude.x, 
+                          label = source.City), 
+            nudge_y = -0.1,
+            colour = "grey"
+)
+```
+
+## Beliebteste Zielländer startend in Deutschland
+
+Der Plot stellt die Flugverbindungen aus Deutschland in verschiedenen Länder dar. An der Y-Achse kann man das jeweilige Zielland der Verbindung ablesen, die X-Achse beschreibt die Anzahl der Verbindungen. Ein Ausreißer ist das Urlaubsland Spanien, mit mehr als 300 verschiedenen Verbindungen aus Deutschland. Die in der Grafik auf Spanien folgenden Länder sind Griechenland mit knapp unter 150 Verbindungen, Deutschland, Italien und die Türkei. Es folgt ein starker Einbruch in den Verbindungszahlen, bis knapp über 50, nach England. Die Anzahl der restlichen Länder nimmt fast linear ab. Die hohe Anzahl der Flugverbindungen nach Spanien ist erklärbar durch die deutschen Touristen und ihre Vorliebe nach einer bestimmten spanischen Insel. Es ist interessant zu sehen, dass die Anzahl der innerdeutschen Flüge nur den dritten Platz in der Grafik haben. Außerdem lässt sich an der farblichen Einfärbung der Balken sehen, dass die beliebtesten Zielländer größtenteils im Süden liegen.
+
+
+```{r}
+#Beliebteste Zielländer Deutschland
+ggplot(data = Routen_aus_Deu[Routen_aus_Deu$Zielverbingen>10,], 
+  mapping =  aes(x=reorder(destination.Country,destination.Country, length),  
+                 fill= richtung_süden.x))+
+  geom_bar(color = "Black")+
+  coord_flip()+
+  scale_fill_discrete(labels = c("Norden", "Süden"))+
+  labs(title = "Beliebteste Zielländer", 
+       subtitle = "Startend in Deutschland",
+       x="", caption = "openflights.org", 
+       y = "Anzahl an unterschiedlichen Routen", 
+       fill = "Flugrichtung nach Breitengrad")+
+  theme_classic()
+```
+
+## Beliebteste Zielflughäfen, startend in Deutschland
+
+Dieses Balkendiagramm zeigt die beliebtesten Zielflughäfen anhand der Anzahl der aus Deutschland startenden Verbindungen. An der Y-Achse kann man die Zielflughäfen ablesen, die X-Achse zeigt die Anzahl der Verbindungen. Schaut man sich die Farbe der Balken an, sieht man ob eine Verbindung in Richtung Süden oder in Richtung Norden geht. Der mit Abstand beliebteste Zielflughafen ist der Palma De Mallorca Airport, der die meisten Verbindungen mit deutschen Flughäfen hat. Danach folgt der Antalya Airport und mit großem Abstand der Tenerife Airport. Die folgenden Flughäfen haben nur einen sehr geringen Unterschied in der Anzahl an Verbindungen. Erst an achter Stelle kommt ein deutscher Flughafen, Berlin-Tegel und somit ein Inlandsflug. An den Balken kann man auch erkennen, dass fast alle Flüge Richtung Süden gehen. Das heißt, dass die beliebtesten Flughäfen in touristischen Regionen liegen, meist am Mittelmeer. Dass bei einigen Balken eine farbliche Aufteilung vorliegt, liegt an der Tatsache, dass z.B. London südlich von Hamburg liegt, aber nördlich von Frankfurt. Diese Visualisierung zeigt uns, dass Deutsche am liebsten ins Warme fliegen und europäische Ziele bevorzugen. Interessant ist auch, dass so viele Flughäfen ähnlich gut frequentiert sind. Das heißt, dass Deutsche entweder kein Urlaubsziel generell präferieren oder die Vorlieben zwischen Deutschen sehr unterschiedlich sind.
+
+```{r}
+#Beliebteste Zielflughäfen Deutschland
+Routen_aus_Deu$destination.Name <- str_replace_all(Routen_aus_Deu$destination.Name, 
+                                                   "Airport", "A.")
+Routen_aus_Deu$destination.Name <- str_replace_all(Routen_aus_Deu$destination.Name, 
+                                                   "International", "I.")
+ggplot(data = Routen_aus_Deu[Routen_aus_Deu$Zielflughäfen>22,], 
+       mapping = aes(x=reorder(destination.Name, destination.Name, length), 
+                     fill= richtung_süden.x))+
+  geom_bar(color = "Black")+
+  coord_flip()+
+  theme_classic()+
+  scale_fill_discrete(labels = c("Norden", "Süden"))+
+  labs(title = "Beliebteste Zielflughäfen",
+       subtitle = "Startend in Deutschland",
+       x="", 
+       caption = "I.A. = Internation Airport", 
+       y = "Anzahl an unterschiedlichen Verbindungen", 
+       fill = "Flugrichtung nach Breitengrad" )
+
+```
+
+# USA
+
+## Verbindungen innerhalb der USA
+
+Im Folgenden Plot sieht man die Verbindungen der Inlandsflüge in den USA. Die Größe der blauen Punkte symbolisiert, wie viele Abflüge ein Flughafen insgesamt hat, die Linien kennzeichnen die ausgehenden Flugverbindungen innerhalb der USA. Je breiter die Linien sind, desto mehr verschiedene Flugverbindungen gibt es zwischen den Flughäfen.
+Es sieht zwar auf den ersten Blick unübersichtlich aus, man erkennt aber, dass die USA sehr viele Inlandsverbindungen hat. Was uns etwas überrascht hat, ist, dass es von fast überall in den USA, Flüge nach Hawaii und Alaska gibt. Zusammenfassend lässt sich sagen, dass die Amerikaner überproportional viel fliegen.
+
+```{r}
+Amerika <- daten[daten$source.Country == "United States of America",]
+
+Amerika_1 <- Amerika[Amerika$destination.Country == "United States of America",]
+
+americacountsabflüge_airport <- Amerika %>%
+  group_by(source.Name, 
+           source.Lattitude, 
+           source.Longitude) %>%
+  summarize(Abflüge = n())
+
+americainlandverbindungen <- Amerika_1 %>%
+  group_by(source.Name, 
+           source.Lattitude, 
+           source.Longitude, 
+           destination.Longitude, 
+           destination.Lattitude)  %>%
+  summarize(Verbindungen = n())
+
+Amerika_1 <- left_join(Amerika_1, 
+                       americainlandverbindungen, 
+                       by = c("source.Name",
+                              "destination.Lattitude",
+                              "destination.Longitude"))
+
+
+#GLOBALE FLUGROUTEN VON AIRLINES
+world <- ne_countries(scale = "medium", 
+                      returnclass = "sf")
+amerika <- ne_countries(country = "United States of America",
+                        scale = "medium", 
+                        returnclass = "sf")
+
+ggplot(data = world) +
+  geom_sf(fill = "black")+
+  coord_sf(xlim = c(-170,-70), ylim = c(15,71))+
+  theme_void()+
+    
+    #Routenlinien einfügen
+    geom_path(data=Amerika_1[Amerika_1$ausgehende_routen >9,], 
+            mapping = aes(x = source.Longitude.x , 
+                          y = source.Lattitude.x, 
+                          size = Verbindungen),
+            alpha = 0.5,
+            colour = "red"
+    )+
+    geom_point(data=americacountsabflüge_airport[americacountsabflüge_airport$Abflüge >9,], 
+               mapping = aes(y=source.Lattitude, 
+                             x=source.Longitude, 
+                             size = Abflüge, 
+                             colour = Abflüge)
+    )+
+    scale_size_binned(range = c(0.02, 4)
+    )+
+    scale_color_binned()+
+  
+    guides(
+    colour = guide_bins("Abflüge"),
+    size = guide_bins("Abflüge")
+    )+
+    
+    labs(title = "Flugverbindungen in Amerika",
+         subtitle = "Flughäfen mit den meisten Abflügen",
+         caption = "Linienstärke = Anzahl an Airlines für diese Route"
+    )+
+    
+  
+    geom_text(data = Amerika_1[Amerika_1$source.Name == "Hartsfield Jackson Atlanta International Airport",],
+              mapping = aes(y=source.Lattitude.x, 
+                            x=source.Longitude.x, 
+                            label = "Atlanta"),
+              nudge_y = 0.7,
+              colour = "grey"
+    )+
+    geom_text(data = Amerika_1[Amerika_1$source.Name == "Chicago O'Hare International Airport",],
+              mapping = aes(y=source.Lattitude.x, 
+                            x=source.Longitude.x, 
+                            label = "Chicago"), 
+              nudge_y = 0.7,
+              colour = "grey"
+    )+
+    geom_text(data = Amerika_1[Amerika_1$source.Name == "Los Angeles International Airport",],
+              mapping = aes(y=source.Lattitude.x, 
+                            x=source.Longitude.x, 
+                            label = "Los Angeles"), 
+              nudge_y = 0.7,
+              colour = "grey"
+    )+
+    geom_text(data = Amerika_1[Amerika_1$source.Name == "Dallas Fort Worth International Airport",],
+              mapping = aes(y=source.Lattitude.x, 
+                            x=source.Longitude.x, 
+                            label = "Dallas"), 
+              nudge_y = 0.7,
+              colour = "grey"
+    )+
+    geom_text(data = Amerika_1[Amerika_1$source.Name == "John F Kennedy International Airport",],
+              mapping = aes(y=source.Lattitude.x, 
+                            x=source.Longitude.x, 
+                            label = "New York"), 
+              nudge_y = 0.7,
+              colour = "grey"
+)
+```
+
+## Verbindungen startend in den USA 
+### Menge der nationalen und internationalen Verbindungen
+
+Das folgende Kuchendiagramm zeigt die Verbindungen startend in der USA, aufgeteilt in nationale 
+und internationale Verbindungen. So sieht man, dass es in den USA 10.518 Inlandsverbindungen im 
+Jahre 2012 gab. In das Ausland gab es 2.503 Verbindungen, also deutlich weniger als innerhalb der 
+USA. Die Tatsache, dass es so viele Inlandsflüge in den USA gibt, lässt sich leicht erklären. Zum einen 
+ist die USA sehr groß und die Strecken zwischen Großstädten sehr weit. Deswegen sind alternative 
+Verkehrsmittel, wie Züge wenig komfortabel. Schaut man sich im Kontrast die Visualisierung an, die die
+meist beflogenen Länder aus Deutschland betrachtet, kann man deutliche Unterschiede erkennen. 
+So ist das Verhältnis zwischen Inlandsflügen und Flügen ins Ausland umgekehrt.
+
+```{r}
+#Verbindungen startend in der USA
+Routen_aus_usa$inlandsflug <- Routen_aus_usa$source.Country == Routen_aus_usa$destination.Country
+usaverbindungen <- Routen_aus_usa %>%
+  group_by(inlandsflug) %>%
+  summarize(n=n())
+ggplot(data= usaverbindungen, aes(x="", y=n, fill=inlandsflug)) +
+  geom_col(color="black") +
+  coord_polar("y") +
+  scale_fill_brewer(labels = c("International", "National"), 
+                    palette = "Set1")+
+  theme_void()+
+  geom_label(aes(label=n), 
+             color = "black", 
+             size=6, 
+             position = position_stack(vjust=0.5), 
+             show.legend = FALSE) +
+  labs(title = "Verbindungen startend in der USA", 
+       subtitle = "Menge der nationalen und internationalen Verbindungen",
+       x="", 
+       caption = "openflights.org", 
+       fill = "Art der Verbindungen")
+```
+
